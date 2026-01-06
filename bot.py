@@ -1,53 +1,94 @@
-import os
 import logging
-from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder,
-    CommandHandler,
-    MessageHandler,
-    filters,
-    ContextTypes,
-)
-import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import gspread
+from telegram import Update, Bot
+from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+import pdfplumber
+import os
 
-# Настройка логов
+# -------------------------
+# Настройка логирования
+# -------------------------
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# Путь к JSON-файлу с сервисным аккаунтом
-secret_name = os.environ.get("SERVICE_ACCOUNT_FILE", "tg2sheet_json")
-SERVICE_ACCOUNT_FILE = f"/etc/secrets/{secret_name}"
+# -------------------------
+# Конфигурация
+# -------------------------
+# Правильный путь к JSON с ключами Google Service Account
+SERVICE_ACCOUNT_FILE = '/etc/secrets/tg2sheet-abb9235438d2.json'
+scope = ["https://spreadsheets.google.com/feeds",
+         "https://www.googleapis.com/auth/drive"]
 
-# Авторизация в Google Sheets
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
-client = gspread.authorize(creds)
+# Telegram токен через environment variable
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-# Указываем ID или название таблицы
-SPREADSHEET_NAME = "Название_вашей_таблицы"
-sheet = client.open(SPREADSHEET_NAME).sheet1
+# -------------------------
+# Авторизация Google Sheets
+# -------------------------
+try:
+    creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
+    client = gspread.authorize(creds)
+    # Пример: открытие листа по названию
+    sheet = client.open("YourSpreadsheetName").sheet1
+except FileNotFoundError:
+    logger.error(f"Файл сервисного аккаунта не найден: {SERVICE_ACCOUNT_FILE}")
+    raise
+except Exception as e:
+    logger.error(f"Ошибка при авторизации Google Sheets: {e}")
+    raise
 
-# Команды бота
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Привет! Я бот для работы с Google Sheets.")
+# -------------------------
+# Функции бота
+# -------------------------
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Привет! Я готов обрабатывать PDF и записывать данные в Google Sheets.")
 
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    await update.message.reply_text(f"Вы написали: {text}")
-    # Пример записи текста в таблицу
-    sheet.append_row([text])
+def handle_pdf(update: Update, context: CallbackContext):
+    if not update.message.document:
+        update.message.reply_text("Пожалуйста, пришлите PDF файл.")
+        return
+    
+    file = update.message.document.get_file()
+    file_path = f"/tmp/{update.message.document.file_name}"
+    file.download(file_path)
+    
+    # Парсим PDF
+    try:
+        with pdfplumber.open(file_path) as pdf:
+            text = ""
+            for page in pdf.pages:
+                text += page.extract_text() + "\n"
+    except Exception as e:
+        update.message.reply_text(f"Ошибка при обработке PDF: {e}")
+        return
+
+    # Добавляем текст в Google Sheet
+    try:
+        sheet.append_row([update.message.from_user.username, text])
+        update.message.reply_text("Данные успешно добавлены в Google Sheet!")
+    except Exception as e:
+        update.message.reply_text(f"Ошибка при записи в Google Sheet: {e}")
+
+# -------------------------
+# Основной запуск бота
+# -------------------------
+def main():
+    if not TELEGRAM_TOKEN:
+        logger.error("TELEGRAM_TOKEN не установлен в environment variables")
+        return
+    
+    updater = Updater(token=TELEGRAM_TOKEN)
+    dispatcher = updater.dispatcher
+
+    dispatcher.add_handler(CommandHandler("start", start))
+    dispatcher.add_handler(MessageHandler(Filters.document.mime_type("application/pdf"), handle_pdf))
+
+    updater.start_polling()
+    updater.idle()
 
 if __name__ == "__main__":
-    BOT_TOKEN = os.environ.get("BOT_TOKEN")
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-
-    # Обработчики команд
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
-
-    # Запуск бота
-    logger.info("Бот запущен!")
-    app.run_polling()
+    main()
