@@ -1,46 +1,47 @@
 import os
+import logging
+from telegram import Update
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 
-# ===== Настройки =====
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO
+)
+
+logger = logging.getLogger(__name__)
+
+# Переменные окружения
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-SPREADSHEET_ID = os.environ.get("SPREADSHEET_ID")
+SERVICE_ACCOUNT_FILE = os.environ.get("SERVICE_ACCOUNT_FILE")  # имя секрета с JSON
+SHEET_NAME = os.environ.get("SHEET_NAME", "Sheet1")
 
-# Путь к секретному файлу сервис-аккаунта
-SERVICE_ACCOUNT_FILE = "/etc/secrets/tg2sheet-abb9235438d2.json"  # <- точно такое имя, какое у вас в Render
-
-# ===== Подключение к Google Sheets =====
-scope = ["https://spreadsheets.google.com/feeds",
-         "https://www.googleapis.com/auth/drive"]
-
+# Подключение к Google Sheets
+scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
 creds = ServiceAccountCredentials.from_json_keyfile_name(SERVICE_ACCOUNT_FILE, scope)
-gc = gspread.authorize(creds)
-sheet = gc.open_by_key(SPREADSHEET_ID).sheet1  # Используем первый лист
+client = gspread.authorize(creds)
+sheet = client.open(SHEET_NAME).sheet1
 
-# ===== Функции бота =====
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Привет! Я готов принимать данные для Google Sheets.")
+# Обработчики команд
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Я бот для записи сообщений в Google Sheet.")
 
-def echo(update: Update, context: CallbackContext):
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    # Добавляем новую строку в конец таблицы
+    # Добавляем сообщение в Google Sheet
     sheet.append_row([text])
-    update.message.reply_text(f"Данные добавлены: {text}")
+    await update.message.reply_text(f"Сообщение записано: {text}")
 
-# ===== Основная функция =====
+# Основная функция
 def main():
-    updater = Updater(token=TELEGRAM_TOKEN, use_context=True)
-    dispatcher = updater.dispatcher
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
 
-    # Обработчики команд
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, echo))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), echo))
 
-    # Запуск бота
-    updater.start_polling()
-    updater.idle()
+    logger.info("Бот запущен...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
