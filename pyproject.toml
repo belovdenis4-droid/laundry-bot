@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "laundry-bot"
+version = "0.1.0"
+description = "Telegram bot для автоматического импорта счетов прачечной в Google Sheets"
+authors = ["Denis Belov <your_email@example.com>"]
+
+[tool.poetry.dependencies]
+python = "^3.11"
+python-telegram-bot = "20.3"
+pdfplumber = "0.9.0"
+gspread = "6.7.1"
+oauth2client = "4.1.3"
+
+[tool.poetry.dev-dependencies]
+# если нужен только для разработки
+pytest = "^7.3"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"
