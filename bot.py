@@ -1,105 +1,106 @@
-import logging
 import os
-import pdfplumber
+import json
+import logging
+import asyncio
 
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
-    MessageHandler,
     ContextTypes,
-    filters,
 )
 
 import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+from google.oauth2.service_account import Credentials
 
-# -------------------------
-# ЛОГИ
-# -------------------------
+
+# ---------- LOGGING ----------
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
 )
+# Исправлено: __name__ (с подчеркиваниями)
 logger = logging.getLogger(__name__)
 
-# -------------------------
-# ENV
-# -------------------------
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 
-SERVICE_ACCOUNT_FILE = "/etc/secrets/tg2sheet-abb9235438d2.json"
-SCOPE = [
-    "https://spreadsheets.google.com/feeds",
-    "https://www.googleapis.com/auth/drive",
-]
+# ---------- ENV ----------
+# Исправлено: используем ваши названия из Replit Secrets
+BOT_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_JSON")
+# Убедитесь, что SPREADSHEET_NAME тоже добавлен в Secrets!
+SPREADSHEET_NAME = os.environ.get("SPREADSHEET_NAME")
 
-# -------------------------
-# GOOGLE SHEETS
-# -------------------------
-creds = ServiceAccountCredentials.from_json_keyfile_name(
-    SERVICE_ACCOUNT_FILE, SCOPE
-)
-gclient = gspread.authorize(creds)
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_TOKEN не задан в Secrets")
 
-# ❗️ ВАЖНО: замени на реальное имя таблицы
-sheet = gclient.open("Счета прачки").sheet1
+if not GOOGLE_CREDENTIALS_JSON:
+    raise RuntimeError("GOOGLE_JSON не задан в Secrets")
 
-# -------------------------
-# HANDLERS
-# -------------------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Привет! Пришли PDF — я загружу данные в Google Sheets."
+if not SPREADSHEET_NAME:
+    raise RuntimeError("SPREADSHEET_NAME не задан в Secrets")
+
+
+# ---------- GOOGLE SHEETS ----------
+try:
+    credentials_dict = json.loads(GOOGLE_CREDENTIALS_JSON)
+
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+
+    creds = Credentials.from_service_account_info(
+        credentials_dict,
+        scopes=scopes
     )
 
+    gclient = gspread.authorize(creds)
 
-async def handle_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    document = update.message.document
+    # Проверка — если имя таблицы неверное, упадёт сразу
+    sheet = gclient.open(SPREADSHEET_NAME).sheet1
+except Exception as e:
+    logger.error(f"Ошибка подключения к Google Sheets: {e}")
+    raise
 
-    if document.mime_type != "application/pdf":
-        await update.message.reply_text("Это не PDF файл.")
-        return
 
-    file = await document.get_file()
-    file_path = f"/tmp/{document.file_name}"
-    await file.download_to_drive(file_path)
+# ---------- HANDLERS ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Бот запущен и Google Sheets подключён ✅")
 
+
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        text = ""
-        with pdfplumber.open(file_path) as pdf:
-            for page in pdf.pages:
-                page_text = page.extract_text()
-                if page_text:
-                    text += page_text + "\n"
-
-        sheet.append_row([
-            update.message.from_user.username or "unknown",
-            text[:49000],  # защита от лимита ячеек
-        ])
-
-        await update.message.reply_text("PDF успешно обработан и записан ✅")
-
+        # gspread синхронная библиотека, в идеале её нужно запускать в потоке, 
+        # но для теста 'ping' сработает и так.
+        value = sheet.acell("A1").value
+        await update.message.reply_text(f"A1 в таблице: {value}")
     except Exception as e:
-        logger.exception("Ошибка обработки PDF")
-        await update.message.reply_text(f"Ошибка: {e}")
+        await update.message.reply_text(f"Ошибка при чтении таблицы: {e}")
 
 
-# -------------------------
-# MAIN
-# -------------------------
-def main():
-    if not TELEGRAM_TOKEN:
-        raise RuntimeError("TELEGRAM_TOKEN не задан")
-
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+# ---------- MAIN ----------
+async def main():
+    # Инициализация приложения
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Document.PDF, handle_pdf))
+    app.add_handler(CommandHandler("ping", ping))
 
-    logger.info("Бот запущен")
-    app.run_polling()
+    logger.info("Бот запускается...")
+    
+    # В новых версиях python-telegram-bot для Replit/скриптов 
+    # лучше использовать этот метод:
+    await app.initialize()
+    await app.updater.start_polling()
+    await app.start()
+    
+    # Держим бота запущенным
+    while True:
+        await asyncio.sleep(1)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("Бот остановлен")
